@@ -1,11 +1,14 @@
+# 1️⃣ MONKEY PATCH FIRST
+import eventlet
+eventlet.monkey_patch()
+
+# 2️⃣ THEN import other modules
 from flask import Flask, render_template
 from flask_socketio import SocketIO
 import base64
 import cv2
 import numpy as np
 from hand_tracking import process_frame
-import eventlet
-eventlet.monkey_patch()
 
 app = Flask(__name__)
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
