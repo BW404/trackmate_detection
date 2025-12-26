@@ -1,32 +1,44 @@
-<img id="camera" width="640" height="480">
-<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-<script>
-const socket = io();
+<!DOCTYPE html>
+<html>
+<head>
+    <title>MediaPipe Hand Tracking</title>
+</head>
+<body>
+    <h2>MediaPipe Hand Tracking (Browser Camera)</h2>
+    <img id="camera" width="640" height="480">
+    
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script>
+        const socket = io();
 
-const video = document.createElement("video");
-video.autoplay = true;
-video.width = 640;
-video.height = 480;
+        const video = document.createElement("video");
+        video.autoplay = true;
+        video.width = 640;
+        video.height = 480;
 
-navigator.mediaDevices.getUserMedia({ video: true })
-.then(stream => {
-    video.srcObject = stream;
+        navigator.mediaDevices.getUserMedia({ video: true })
+        .then(stream => {
+            video.srcObject = stream;
 
-    const canvas = document.createElement("canvas");
-    canvas.width = 640;
-    canvas.height = 480;
-    const ctx = canvas.getContext("2d");
+            const canvas = document.createElement("canvas");
+            canvas.width = 640;
+            canvas.height = 480;
+            const ctx = canvas.getContext("2d");
 
-    function sendFrame() {
-        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-        const dataURL = canvas.toDataURL("image/jpeg");
-        socket.emit("frame", dataURL);
-        requestAnimationFrame(sendFrame);
-    }
-    sendFrame();
-});
+            function sendFrame() {
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                const dataURL = canvas.toDataURL("image/jpeg");
+                socket.emit("frame", dataURL);
+                requestAnimationFrame(sendFrame);
+            }
+            sendFrame();
+        }).catch(err => {
+            alert("Camera access denied: " + err);
+        });
 
-socket.on("frame", data => {
-    document.getElementById("camera").src = data.image;
-});
-</script>
+        socket.on("frame", data => {
+            document.getElementById("camera").src = data.image;
+        });
+    </script>
+</body>
+</html>
