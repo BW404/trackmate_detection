@@ -3,12 +3,12 @@ import cv2
 import base64
 import numpy as np
 import mediapipe as mp
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.responses import HTMLResponse
 import socketio
 import asyncio
 
-# FastAPI app
+# FastAPI + Socket.IO
 app = FastAPI()
 sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
 app_sio = socketio.ASGIApp(sio, app)
@@ -22,28 +22,34 @@ hands = mp_hands.Hands(
     min_tracking_confidence=0.5
 )
 
-# HTML endpoint
+# Serve HTML
 @app.get("/", response_class=HTMLResponse)
 async def index():
     with open("index.html") as f:
         return f.read()
 
-# Socket.IO event: receive video frame from client
+# Limit FPS
+LAST_PROCESSED = {}
+
 @sio.event
 async def video_frame(sid, data):
     try:
-        # Decode base64 image
+        global LAST_PROCESSED
+        now = asyncio.get_event_loop().time()
+        if sid in LAST_PROCESSED and now - LAST_PROCESSED[sid] < 0.1:  # 10 FPS max
+            return
+        LAST_PROCESSED[sid] = now
+
+        # Decode frame
         img_bytes = base64.b64decode(data.split(",")[1])
         np_arr = np.frombuffer(img_bytes, np.uint8)
         frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-        # Resize for speed
+        # Resize small for speed
         frame = cv2.resize(frame, (320, 240))
-
-        # Convert to RGB
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # MediaPipe hands detection
+        # Detect hands
         results = hands.process(rgb_frame)
 
         hand_landmarks = []
@@ -52,11 +58,11 @@ async def video_frame(sid, data):
                 landmarks = [{"x": lm.x, "y": lm.y} for lm in hand_landmark.landmark]
                 hand_landmarks.append(landmarks)
 
-        # Emit landmarks back to client
+        # Emit landmarks async
         await sio.emit("hand_landmarks", {"landmarks": hand_landmarks}, to=sid)
 
     except Exception as e:
-        print("Error processing frame:", e)
+        print("Frame error:", e)
 
 @sio.event
 async def connect(sid, environ):

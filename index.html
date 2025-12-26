@@ -1,82 +1,60 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8">
-  <title>Hand Tracking</title>
-  <style>
-    video, canvas {
-      transform: scaleX(-1); /* Mirror camera */
-    }
-    canvas {
-      position: absolute;
-      top: 0;
-      left: 0;
-    }
-  </style>
+  <title>Hand Detection</title>
 </head>
 <body>
-  <video id="video" width="320" height="240" autoplay muted></video>
+  <h2>Hand Detection</h2>
+  <video id="video" autoplay playsinline width="320" height="240"></video>
   <canvas id="canvas" width="320" height="240"></canvas>
 
-  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="https://cdn.socket.io/4.7.1/socket.io.min.js"></script>
   <script>
-    const video = document.getElementById("video");
-    const canvas = document.getElementById("canvas");
-    const ctx = canvas.getContext("2d");
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
     const socket = io();
 
-    // Access webcam
-    navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } })
-      .then(stream => video.srcObject = stream)
-      .catch(err => console.error("Error accessing camera:", err));
+    // Webcam access
+    navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+      video.srcObject = stream;
+    });
 
-    // Send frames periodically
-    video.addEventListener("play", () => {
+    video.addEventListener('play', () => {
       const sendFrame = () => {
-        if(video.paused || video.ended) return;
+        if (video.paused || video.ended) return;
 
-        // Draw video to offscreen canvas
-        const off = document.createElement("canvas");
-        off.width = 320;
-        off.height = 240;
-        const offCtx = off.getContext("2d");
-        offCtx.drawImage(video, 0, 0, 320, 240);
-        const dataUrl = off.toDataURL("image/jpeg", 0.5); // Reduce quality for speed
+        // Draw frame to canvas
+        ctx.drawImage(video, 0, 0, 320, 240);
 
-        // Send frame to server
-        socket.emit("video_frame", dataUrl);
+        // Compress to JPEG for lower bandwidth
+        canvas.toBlob(blob => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            socket.emit('video_frame', reader.result);
+          };
+          reader.readAsDataURL(blob);
+        }, 'image/jpeg', 0.5);
 
         setTimeout(sendFrame, 100); // 10 FPS
       };
       sendFrame();
     });
 
-    // Receive hand landmarks from server
-    socket.on("hand_landmarks", data => {
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // Draw landmarks
+    socket.on('hand_landmarks', data => {
+      ctx.drawImage(video, 0, 0, 320, 240); // redraw video
+      ctx.strokeStyle = 'red';
+      ctx.lineWidth = 2;
 
-      const hands = data.landmarks;
-      hands.forEach(hand => {
-        ctx.beginPath();
-        ctx.strokeStyle = "red";
-        ctx.lineWidth = 2;
-        hand.forEach((lm, i) => {
-          const x = lm.x * canvas.width;
-          const y = lm.y * canvas.height;
-          if(i === 0) ctx.moveTo(x, y);
-          else ctx.lineTo(x, y);
-        });
-        ctx.stroke();
-
-        // Draw points
-        hand.forEach(lm => {
-          const x = lm.x * canvas.width;
-          const y = lm.y * canvas.height;
+      data.landmarks.forEach(hand => {
+        for (let i = 0; i < hand.length; i++) {
+          const x = hand[i].x * canvas.width;
+          const y = hand[i].y * canvas.height;
           ctx.beginPath();
-          ctx.arc(x, y, 3, 0, 2 * Math.PI);
-          ctx.fillStyle = "lime";
+          ctx.arc(x, y, 4, 0, 2 * Math.PI);
           ctx.fill();
-        });
+        }
       });
     });
   </script>
