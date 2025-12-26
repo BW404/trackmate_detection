@@ -1,78 +1,73 @@
-# app.py
+import io
 import cv2
-import base64
 import numpy as np
-import mediapipe as mp
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
-import socketio
+from PIL import Image
 import asyncio
+from ultralytics import YOLO  # YOLOv8
 
-# FastAPI + Socket.IO
 app = FastAPI()
-sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins='*')
-app_sio = socketio.ASGIApp(sio, app)
 
-# MediaPipe hands
-mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(
-    static_image_mode=False,
-    max_num_hands=2,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
+# Load YOLO model (small version for low latency)
+yolo_model = YOLO("yolov8n.pt")  # nano model, super fast
 
-# Serve HTML
-@app.get("/", response_class=HTMLResponse)
-async def index():
+# Load hand landmark model (TFLite)
+import tensorflow as tf
+interpreter = tf.lite.Interpreter(model_path="hand_landmark.tflite")
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+@app.get("/")
+async def get():
     with open("index.html") as f:
-        return f.read()
+        return HTMLResponse(f.read())
 
-# Limit FPS
-LAST_PROCESSED = {}
+def predict_hand_landmarks(frame):
+    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, (input_details[0]['shape'][2], input_details[0]['shape'][1]))
+    img = img.astype(np.float32) / 255.0
+    img = np.expand_dims(img, axis=0)
 
-@sio.event
-async def video_frame(sid, data):
+    interpreter.set_tensor(input_details[0]['index'], img)
+    interpreter.invoke()
+
+    landmarks = interpreter.get_tensor(output_details[0]['index'])
+    return landmarks[0].tolist()
+
+def detect_objects(frame):
+    results = yolo_model(frame, verbose=False)[0]
+    boxes = results.boxes.xyxy.cpu().numpy().tolist()  # [[x1,y1,x2,y2],...]
+    classes = results.boxes.cls.cpu().numpy().tolist()  # class ids
+    confidences = results.boxes.conf.cpu().numpy().tolist()
+    return {"boxes": boxes, "classes": classes, "confidences": confidences}
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    print("Client connected")
     try:
-        global LAST_PROCESSED
-        now = asyncio.get_event_loop().time()
-        if sid in LAST_PROCESSED and now - LAST_PROCESSED[sid] < 0.1:  # 10 FPS max
-            return
-        LAST_PROCESSED[sid] = now
+        while True:
+            data = await websocket.receive_bytes()
+            img = Image.open(io.BytesIO(data)).convert('RGB')
+            frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
-        # Decode frame
-        img_bytes = base64.b64decode(data.split(",")[1])
-        np_arr = np.frombuffer(img_bytes, np.uint8)
-        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+            # Hand landmarks
+            landmarks = predict_hand_landmarks(frame)
 
-        # Resize small for speed
-        frame = cv2.resize(frame, (320, 240))
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Object detection
+            objects = detect_objects(frame)
 
-        # Detect hands
-        results = hands.process(rgb_frame)
-
-        hand_landmarks = []
-        if results.multi_hand_landmarks:
-            for hand_landmark in results.multi_hand_landmarks:
-                landmarks = [{"x": lm.x, "y": lm.y} for lm in hand_landmark.landmark]
-                hand_landmarks.append(landmarks)
-
-        # Emit landmarks async
-        await sio.emit("hand_landmarks", {"landmarks": hand_landmarks}, to=sid)
-
+            await websocket.send_json({
+                "landmarks": landmarks,
+                "objects": objects
+            })
+    except WebSocketDisconnect:
+        print("Client disconnected")
     except Exception as e:
-        print("Frame error:", e)
-
-@sio.event
-async def connect(sid, environ):
-    print("Client connected:", sid)
-
-@sio.event
-async def disconnect(sid):
-    print("Client disconnected:", sid)
+        print("Error:", e)
 
 if __name__ == "__main__":
     import uvicorn
-    print("Server running on http://0.0.0.0:8000")
-    uvicorn.run(app_sio, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
