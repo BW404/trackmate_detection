@@ -1,5 +1,7 @@
 Flask>=2.3
+flask-socketio>=6.5
+python-socketio>=5.9
 opencv-python>=4.8
 mediapipe==0.10.31
 numpy>=1.25
-Pillow>=10.0
+eventlet>=0.34
