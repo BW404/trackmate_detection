@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Hand Tracking</title>
+  <style>
+    video, canvas {
+      transform: scaleX(-1); /* Mirror camera */
+    }
+    canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+  </style>
+</head>
+<body>
+  <video id="video" width="320" height="240" autoplay muted></video>
+  <canvas id="canvas" width="320" height="240"></canvas>
+
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script>
+    const video = document.getElementById("video");
+    const canvas = document.getElementById("canvas");
+    const ctx = canvas.getContext("2d");
+    const socket = io();
+
+    // Access webcam
+    navigator.mediaDevices.getUserMedia({ video: { width: 320, height: 240 } })
+      .then(stream => video.srcObject = stream)
+      .catch(err => console.error("Error accessing camera:", err));
+
+    // Send frames periodically
+    video.addEventListener("play", () => {
+      const sendFrame = () => {
+        if(video.paused || video.ended) return;
+
+        // Draw video to offscreen canvas
+        const off = document.createElement("canvas");
+        off.width = 320;
+        off.height = 240;
+        const offCtx = off.getContext("2d");
+        offCtx.drawImage(video, 0, 0, 320, 240);
+        const dataUrl = off.toDataURL("image/jpeg", 0.5); // Reduce quality for speed
+
+        // Send frame to server
+        socket.emit("video_frame", dataUrl);
+
+        setTimeout(sendFrame, 100); // 10 FPS
+      };
+      sendFrame();
+    });
+
+    // Receive hand landmarks from server
+    socket.on("hand_landmarks", data => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const hands = data.landmarks;
+      hands.forEach(hand => {
+        ctx.beginPath();
+        ctx.strokeStyle = "red";
+        ctx.lineWidth = 2;
+        hand.forEach((lm, i) => {
+          const x = lm.x * canvas.width;
+          const y = lm.y * canvas.height;
+          if(i === 0) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        // Draw points
+        hand.forEach(lm => {
+          const x = lm.x * canvas.width;
+          const y = lm.y * canvas.height;
+          ctx.beginPath();
+          ctx.arc(x, y, 3, 0, 2 * Math.PI);
+          ctx.fillStyle = "lime";
+          ctx.fill();
+        });
+      });
+    });
+  </script>
+</body>
+</html>
