@@ -1,31 +1,29 @@
 from flask import Flask, render_template
-from flask_socketio import SocketIO, emit
+from flask_socketio import SocketIO
 import cv2
-import numpy as np
 import base64
 from hand_tracking import process_frame
+import numpy as np
 
 app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*")  # allow cross-origin for VPS
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-@app.route('/')
+@app.route("/")
 def index():
-    return render_template('index.html')
+    return render_template("index.html")
 
-@socketio.on('frame')
+@socketio.on("frame")
 def handle_frame(data):
-    try:
-        img_bytes = base64.b64decode(data.split(',')[1])
-        np_arr = np.frombuffer(img_bytes, np.uint8)
-        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    # Decode base64 frame from browser
+    header, encoded = data.split(',', 1)
+    img_bytes = base64.b64decode(encoded)
+    nparr = np.frombuffer(img_bytes, np.uint8)
+    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-        frame = process_frame(frame)
+    # Process frame
+    frame = process_frame(frame)
 
-        _, buffer = cv2.imencode('.jpg', frame)
-        img_str = base64.b64encode(buffer).decode('utf-8')
-        emit('processed_frame', f'data:image/jpeg;base64,{img_str}')
-    except Exception as e:
-        print("Error:", e)
-
-if __name__ == '__main__':
-    socketio.run(app, host='0.0.0.0', port=5000)
+    # Encode back to base64 and send to browser
+    _, buffer = cv2.imencode('.jpg', frame)
+    frame_b64 = base64.b64encode(buffer).decode('utf-8')
+    socketio.emit("frame", {'image': "data:image/jpeg;base64," + frame_b64})

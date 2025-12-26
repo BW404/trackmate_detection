@@ -1,14 +1,32 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>MediaPipe Hand Tracking WS</title>
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-</head>
-<body>
-    <h2>Hand Tracking via WebSocket</h2>
-    <video id="video" width="640" height="480" autoplay></video>
-    <canvas id="canvas" width="640" height="480"></canvas>
+<img id="camera" width="640" height="480">
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script>
+const socket = io();
 
-    <script src="{{ url_for('static', filename='main.js') }}"></script>
-</body>
-</html>
+const video = document.createElement("video");
+video.autoplay = true;
+video.width = 640;
+video.height = 480;
+
+navigator.mediaDevices.getUserMedia({ video: true })
+.then(stream => {
+    video.srcObject = stream;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 640;
+    canvas.height = 480;
+    const ctx = canvas.getContext("2d");
+
+    function sendFrame() {
+        ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+        const dataURL = canvas.toDataURL("image/jpeg");
+        socket.emit("frame", dataURL);
+        requestAnimationFrame(sendFrame);
+    }
+    sendFrame();
+});
+
+socket.on("frame", data => {
+    document.getElementById("camera").src = data.image;
+});
+</script>
