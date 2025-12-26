@@ -1,72 +1,94 @@
-import io
+import asyncio
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+import socketio
 import cv2
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
 from PIL import Image
-import asyncio
-from ultralytics import YOLO  # YOLOv8
+from io import BytesIO
+import base64
 
+# --- YOLOv8 ---
+from ultralytics import YOLO
+
+# Initialize FastAPI + Socket.IO
+sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins="*")
 app = FastAPI()
+app = socketio.ASGIApp(sio, app)
 
-# Load YOLO model (small version for low latency)
-yolo_model = YOLO("yolov8n.pt")  # nano model, super fast
+# Load YOLOv8 model
+yolo_model = YOLO("yolov8n.pt")  # small & fast
+classes_of_interest = ["cell phone", "mouse", "keyboard", "laptop", "cup", "bottle", "monitor"]
 
-# Load hand landmark model (TFLite)
-import tensorflow as tf
-interpreter = tf.lite.Interpreter(model_path="hand_landmark.tflite")
-interpreter.allocate_tensors()
-input_details = interpreter.get_input_details()
-output_details = interpreter.get_output_details()
+# --- TFLite hand tracking ---
+import tflite_runtime.interpreter as tflite
+hand_model = tflite.Interpreter(model_path="hand_landmark.tflite")
+hand_model.allocate_tensors()
+input_details = hand_model.get_input_details()
+output_details = hand_model.get_output_details()
+
 
 @app.get("/")
-async def get():
+async def index():
     with open("index.html") as f:
         return HTMLResponse(f.read())
 
-def predict_hand_landmarks(frame):
-    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    img = cv2.resize(img, (input_details[0]['shape'][2], input_details[0]['shape'][1]))
-    img = img.astype(np.float32) / 255.0
-    img = np.expand_dims(img, axis=0)
 
-    interpreter.set_tensor(input_details[0]['index'], img)
-    interpreter.invoke()
+@sio.event
+async def connect(sid, environ):
+    print("Client connected:", sid)
 
-    landmarks = interpreter.get_tensor(output_details[0]['index'])
-    return landmarks[0].tolist()
 
-def detect_objects(frame):
-    results = yolo_model(frame, verbose=False)[0]
-    boxes = results.boxes.xyxy.cpu().numpy().tolist()  # [[x1,y1,x2,y2],...]
-    classes = results.boxes.cls.cpu().numpy().tolist()  # class ids
-    confidences = results.boxes.conf.cpu().numpy().tolist()
-    return {"boxes": boxes, "classes": classes, "confidences": confidences}
+@sio.event
+async def disconnect(sid):
+    print("Client disconnected:", sid)
 
-@app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket):
-    await websocket.accept()
-    print("Client connected")
+
+@sio.event
+async def frame(sid, data):
+    """
+    Receives base64 image from client, runs hand tracking + YOLO, 
+    and sends back processed frame.
+    """
     try:
-        while True:
-            data = await websocket.receive_bytes()
-            img = Image.open(io.BytesIO(data)).convert('RGB')
-            frame = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+        # Decode base64 image
+        img_bytes = base64.b64decode(data.split(",")[1])
+        img = np.array(Image.open(BytesIO(img_bytes)))
+        frame = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
-            # Hand landmarks
-            landmarks = predict_hand_landmarks(frame)
+        h, w, _ = frame.shape
 
-            # Object detection
-            objects = detect_objects(frame)
+        # --- YOLO Object Detection ---
+        yolo_results = yolo_model(frame)[0]  # first image
+        for det in yolo_results.boxes.data.tolist():  # xyxy, conf, cls
+            x1, y1, x2, y2, conf, cls_id = det
+            class_name = yolo_results.names[int(cls_id)]
+            if class_name in classes_of_interest:
+                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                cv2.putText(frame, f"{class_name} {conf:.2f}", (int(x1), int(y1)-10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-            await websocket.send_json({
-                "landmarks": landmarks,
-                "objects": objects
-            })
-    except WebSocketDisconnect:
-        print("Client disconnected")
+        # --- Hand Landmarks (TFLite) ---
+        # Preprocess hand image (resize etc.)
+        img_input = cv2.resize(frame, (input_details[0]['shape'][2], input_details[0]['shape'][1]))
+        img_input = np.expand_dims(img_input.astype(np.float32), axis=0)
+        hand_model.set_tensor(input_details[0]['index'], img_input)
+        hand_model.invoke()
+        landmarks = hand_model.get_tensor(output_details[0]['index'])
+
+        # Draw landmarks (dots on fingers)
+        for lm in landmarks[0]:
+            x, y, z = int(lm[0]*w), int(lm[1]*h), lm[2]
+            cv2.circle(frame, (x, y), 4, (0, 0, 255), -1)  # red small dots
+
+        # Encode back to base64
+        _, buffer = cv2.imencode('.jpg', frame)
+        frame_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
+        await sio.emit("frame", frame_b64, to=sid)
+
     except Exception as e:
-        print("Error:", e)
+        print("Error processing frame:", e)
+
 
 if __name__ == "__main__":
     import uvicorn
