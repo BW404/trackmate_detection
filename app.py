@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, Response
+from flask import Flask, render_template, request, jsonify
 import cv2
 import numpy as np
 import base64
@@ -6,33 +6,26 @@ from hand_tracking import process_frame
 
 app = Flask(__name__)
 
-# GLOBAL frame counter
-frame_count = 0
-
-
-@app.route("/")
+@app.route('/')
 def index():
-    return render_template("index.html")
+    return render_template('index.html')
 
-
-@app.route("/process", methods=["POST"])
+@app.route('/process', methods=['POST'])
 def process():
-    global frame_count
-    frame_count += 1
+    try:
+        data = request.json['image']  # base64 string from JS
+        img_bytes = base64.b64decode(data.split(',')[1])
+        np_arr = np.frombuffer(img_bytes, np.uint8)
+        frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
 
-    data = request.json["image"]
-    img_data = base64.b64decode(data.split(",")[1])
+        frame = process_frame(frame)
 
-    np_arr = np.frombuffer(img_data, np.uint8)
-    frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        _, buffer = cv2.imencode('.jpg', frame)
+        img_str = base64.b64encode(buffer).decode('utf-8')
+        return jsonify({'image': f'data:image/jpeg;base64,{img_str}'})
+    except Exception as e:
+        print("Error:", e)
+        return jsonify({'error': str(e)}), 500
 
-    # Process every 3rd frame for speed
-    run_detection = (frame_count % 1 == 0)
-    frame = process_frame(frame, run_detection)
-
-    _, buffer = cv2.imencode(".jpg", frame)
-    return Response(buffer.tobytes(), mimetype="image/jpeg")
-
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=False)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)

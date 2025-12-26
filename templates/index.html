@@ -1,47 +1,13 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>TrackMate – Hand Detection</title>
+    <title>MediaPipe Hand Tracking</title>
 </head>
 <body>
-<h2>MediaPipe Hand Tracking (Browser Camera)</h2>
+    <h2>Hand Tracking Demo</h2>
+    <video id="video" width="640" height="480" autoplay></video>
+    <canvas id="canvas" width="640" height="480"></canvas>
 
-<video id="video" autoplay playsinline></video>
-<canvas id="canvas" style="display:none;"></canvas>
-<br>
-<img id="output" />
-
-<script>
-const video = document.getElementById("video");
-const canvas = document.getElementById("canvas");
-const output = document.getElementById("output");
-const ctx = canvas.getContext("2d");
-
-navigator.mediaDevices.getUserMedia({ video: true })
-.then(stream => {
-    video.srcObject = stream;
-});
-
-function sendFrame() {
-    canvas.width = 640;
-    canvas.height = 480;
-
-    ctx.drawImage(video, 0, 0, 640, 480);
-    const imageData = canvas.toDataURL("image/jpeg", 0.5);
-
-    fetch("/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ image: imageData })
-    })
-    .then(res => res.blob())
-    .then(blob => {
-        output.src = URL.createObjectURL(blob);
-    });
-}
-
-setInterval(sendFrame, 150); // ~10 FPS
-</script>
-
+    <script src="{{ url_for('static', filename='main.js') }}"></script>
 </body>
 </html>

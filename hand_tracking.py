@@ -1,34 +1,38 @@
 import cv2
-import mediapipe as mp
+from mediapipe.python import solutions as mp_solutions
 
-mp_hands = mp.solutions.hands
+mp_hands = mp_solutions.hands
+mp_draw = mp_solutions.drawing_utils
+
 hands = mp_hands.Hands(
-    static_image_mode=True,      # ✅ Use for HTTP streaming
-    max_num_hands=2,
+    static_image_mode=True,      # each frame independent
+    max_num_hands=1,
     model_complexity=0,
-    min_detection_confidence=0.3,
-    min_tracking_confidence=0.3
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
 )
-mp_draw = mp.solutions.drawing_utils
 
 last_landmarks = None
 no_hand_frames = 0
 MAX_NO_HAND_FRAMES = 5
 
-def process_frame(frame, run_detection=True):
+def process_frame(frame):
+    """
+    frame: numpy array (BGR)
+    returns processed frame (BGR) with landmarks drawn
+    """
     global last_landmarks, no_hand_frames
 
-    if run_detection:
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = hands.process(rgb)
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    results = hands.process(rgb)
 
-        if results.multi_hand_landmarks:
-            last_landmarks = results.multi_hand_landmarks
-            no_hand_frames = 0
-        else:
-            no_hand_frames += 1
-            if no_hand_frames >= MAX_NO_HAND_FRAMES:
-                last_landmarks = None
+    if results.multi_hand_landmarks:
+        last_landmarks = results.multi_hand_landmarks
+        no_hand_frames = 0
+    else:
+        no_hand_frames += 1
+        if no_hand_frames >= MAX_NO_HAND_FRAMES:
+            last_landmarks = None
 
     if last_landmarks:
         for hand_landmarks in last_landmarks:
@@ -37,5 +41,4 @@ def process_frame(frame, run_detection=True):
                 hand_landmarks,
                 mp_hands.HAND_CONNECTIONS
             )
-
     return frame

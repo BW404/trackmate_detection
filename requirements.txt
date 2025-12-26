@@ -1,0 +1,5 @@
+Flask>=2.3
+opencv-python>=4.8
+mediapipe==0.10.31
+numpy>=1.25
+Pillow>=10.0
