@@ -1,50 +1,99 @@
-import eventlet
-eventlet.monkey_patch()
-
-from flask import Flask, render_template
-from flask_socketio import SocketIO
+# app.py
 import base64
 import cv2
 import numpy as np
-from hand_tracking import process_frame
+import mediapipe as mp
+import asyncio
+import socketio
+from fastapi import FastAPI
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
-app = Flask(__name__)
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode="eventlet")
+# -------------------
+# Setup Socket.IO & FastAPI
+# -------------------
+sio = socketio.AsyncServer(async_mode="asgi", cors_allowed_origins="*")
+app = FastAPI()
+socket_app = socketio.ASGIApp(sio, app)
 
-# Set low resolution for faster processing
-FRAME_WIDTH = 320
-FRAME_HEIGHT = 240
-JPEG_QUALITY = 50  # 0-100, lower is more compressed
+# Serve static files (JS, CSS)
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-@app.route("/")
-def index():
-    return render_template("index.html")
+# -------------------
+# Mediapipe Hands
+# -------------------
+mp_hands = mp.solutions.hands
+mp_drawing = mp.solutions.drawing_utils
+hands_detector = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=2,
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5,
+)
 
-@socketio.on("frame")
-def handle_frame(data):
+# -------------------
+# HTML Endpoint
+# -------------------
+@app.get("/")
+async def index():
+    with open("index.html") as f:
+        return HTMLResponse(f.read())
+
+# -------------------
+# Socket.IO Events
+# -------------------
+@sio.event
+async def connect(sid, environ):
+    print(f"[INFO] Client connected: {sid}")
+
+@sio.event
+async def disconnect(sid):
+    print(f"[INFO] Client disconnected: {sid}")
+
+@sio.event
+async def video_frame(sid, data):
+    """
+    Receive a base64 frame from the client, detect hand landmarks,
+    and send back landmarks.
+    """
     try:
-        # Decode base64 image from client
-        header, encoded = data.split(',', 1)
-        img_bytes = base64.b64decode(encoded)
+        # Decode base64 to numpy image
+        img_bytes = base64.b64decode(data.split(",")[1])
         nparr = np.frombuffer(img_bytes, np.uint8)
         frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-        # Resize for low latency
-        frame = cv2.resize(frame, (FRAME_WIDTH, FRAME_HEIGHT))
+        # Resize for speed
+        frame = cv2.resize(frame, (320, 240))
 
-        # Process hand landmarks
-        frame = process_frame(frame)
+        # Convert BGR to RGB
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-        # Encode to low-quality JPEG
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
-        _, buffer = cv2.imencode('.jpg', frame, encode_param)
-        frame_b64 = base64.b64encode(buffer).decode('utf-8')
+        # Process hands
+        results = hands_detector.process(rgb_frame)
+        landmarks_data = []
 
-        # Send back to client
-        socketio.emit("frame", {'image': "data:image/jpeg;base64," + frame_b64})
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                single_hand = []
+                for lm in hand_landmarks.landmark:
+                    single_hand.append({
+                        "x": lm.x,
+                        "y": lm.y,
+                        "z": lm.z
+                    })
+                landmarks_data.append(single_hand)
+
+        # Send back landmarks
+        await sio.emit("hand_landmarks", {"landmarks": landmarks_data}, to=sid)
 
     except Exception as e:
         print("Error processing frame:", e)
+        await sio.emit("hand_landmarks", {"landmarks": []}, to=sid)
 
+# -------------------
+# Run server using uvicorn
+# -------------------
 if __name__ == "__main__":
-    socketio.run(app, host="0.0.0.0", port=5000)
+    import uvicorn
+    print("Server running on http://0.0.0.0:8000")
+    uvicorn.run(socket_app, host="0.0.0.0", port=8000)
