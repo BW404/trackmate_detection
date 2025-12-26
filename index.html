@@ -1,62 +1,77 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <title>Hand Detection</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TrackMate Hand Detection</title>
+<style>
+  body { text-align: center; background: #222; color: #fff; }
+  video, canvas { border: 1px solid #555; }
+  canvas { position: absolute; left: 0; top: 0; }
+  .container { position: relative; display: inline-block; }
+</style>
 </head>
 <body>
-  <h2>Hand Detection</h2>
-  <video id="video" autoplay playsinline width="320" height="240"></video>
+<h1>TrackMate Hand Detection</h1>
+
+<div class="container">
+  <video id="video" width="320" height="240" autoplay muted></video>
   <canvas id="canvas" width="320" height="240"></canvas>
+</div>
 
-  <script src="https://cdn.socket.io/4.7.1/socket.io.min.js"></script>
-  <script>
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    const ctx = canvas.getContext('2d');
-    const socket = io();
+<script src="https://cdn.socket.io/4.6.1/socket.io.min.js"></script>
+<script>
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const socket = io();  // Connect to your FastAPI Socket.IO server
 
-    // Webcam access
-    navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
-      video.srcObject = stream;
-    });
+let lastLandmarks = []; // persistent landmarks to avoid blinking
 
-    video.addEventListener('play', () => {
-      const sendFrame = () => {
-        if (video.paused || video.ended) return;
+// Start webcam
+navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
+  video.srcObject = stream;
+});
 
-        // Draw frame to canvas
-        ctx.drawImage(video, 0, 0, 320, 240);
+// Main loop
+video.addEventListener('play', () => {
+  const sendFrame = () => {
+    if (video.paused || video.ended) return;
 
-        // Compress to JPEG for lower bandwidth
-        canvas.toBlob(blob => {
-          const reader = new FileReader();
-          reader.onloadend = () => {
-            socket.emit('video_frame', reader.result);
-          };
-          reader.readAsDataURL(blob);
-        }, 'image/jpeg', 0.5);
+    // Draw video frame
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-        setTimeout(sendFrame, 100); // 10 FPS
-      };
-      sendFrame();
-    });
-
-    // Draw landmarks
-    socket.on('hand_landmarks', data => {
-      ctx.drawImage(video, 0, 0, 320, 240); // redraw video
-      ctx.strokeStyle = 'red';
-      ctx.lineWidth = 2;
-
-      data.landmarks.forEach(hand => {
-        for (let i = 0; i < hand.length; i++) {
-          const x = hand[i].x * canvas.width;
-          const y = hand[i].y * canvas.height;
-          ctx.beginPath();
-          ctx.arc(x, y, 4, 0, 2 * Math.PI);
-          ctx.fill();
-        }
+    // Draw landmarks from last detection
+    ctx.fillStyle = 'red';
+    lastLandmarks.forEach(hand => {
+      hand.forEach(lm => {
+        const x = lm.x * canvas.width;
+        const y = lm.y * canvas.height;
+        ctx.beginPath();
+        ctx.arc(x, y, 2, 0, 2 * Math.PI); // small dot
+        ctx.fill();
       });
     });
-  </script>
+
+    // Send frame to server every 100ms (10 FPS)
+    canvas.toBlob(blob => {
+      const reader = new FileReader();
+      reader.onloadend = () => socket.emit('video_frame', reader.result);
+      reader.readAsDataURL(blob);
+    }, 'image/jpeg', 0.5);
+
+    setTimeout(sendFrame, 100);
+  };
+  sendFrame();
+});
+
+// Receive landmarks from server
+socket.on('hand_landmarks', data => {
+  if (data.landmarks.length > 0) {
+    lastLandmarks = data.landmarks; // update persistent landmarks
+  }
+});
+</script>
+
 </body>
 </html>
