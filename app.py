@@ -1,95 +1,128 @@
-import asyncio
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
-import socketio
 import cv2
 import numpy as np
-from PIL import Image
-from io import BytesIO
+import tensorflow as tf
+from fastapi import FastAPI, WebSocket
+from fastapi.responses import HTMLResponse
+from fastapi.middleware.cors import CORSMiddleware
+import asyncio
 import base64
 
-# --- YOLOv8 ---
-from ultralytics import YOLO
-
-# Initialize FastAPI + Socket.IO
-sio = socketio.AsyncServer(async_mode='asgi', cors_allowed_origins="*")
+# FastAPI setup
 app = FastAPI()
-app = socketio.ASGIApp(sio, app)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# Load YOLOv8 model
-yolo_model = YOLO("yolov8n.pt")  # small & fast
-classes_of_interest = ["cell phone", "mouse", "keyboard", "laptop", "cup", "bottle", "monitor"]
+# HTML page
+html = """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>TrackMate Detection</title>
+</head>
+<body>
+    <h1>TrackMate: Hand & Object Detection</h1>
+    <img id="frame" width="640" />
+    <script>
+        let ws = new WebSocket("ws://localhost:8000/ws");
+        ws.onmessage = function(event) {
+            let img = document.getElementById("frame");
+            img.src = "data:image/jpeg;base64," + event.data;
+        };
+    </script>
+</body>
+</html>
+"""
 
-# --- TFLite hand tracking ---
-import tflite_runtime.interpreter as tflite
-hand_model = tflite.Interpreter(model_path="hand_landmark.tflite")
+@app.get("/")
+async def index():
+    return HTMLResponse(html)
+
+# Load TFLite hand landmark model
+hand_model = tf.lite.Interpreter(model_path="hand_landmark.tflite")
 hand_model.allocate_tensors()
 input_details = hand_model.get_input_details()
 output_details = hand_model.get_output_details()
 
+# Load YOLOv8 model via OpenCV DNN
+# Replace 'yolov8n.onnx' with your YOLO ONNX model
+yolo_net = cv2.dnn.readNet("yolov8n.onnx")
+yolo_classes = ["person", "phone", "mouse", "keyboard", "monitor", "laptop", "cup", "waterbottle"]
 
-@app.get("/")
-async def index():
-    with open("index.html") as f:
-        return HTMLResponse(f.read())
+# Helper function to run hand detection
+def detect_hand(frame):
+    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    img_resized = cv2.resize(img, (input_details[0]['shape'][2], input_details[0]['shape'][1]))
+    input_data = np.expand_dims(img_resized, axis=0).astype(np.float32)
+    hand_model.set_tensor(input_details[0]['index'], input_data)
+    hand_model.invoke()
+    keypoints = hand_model.get_tensor(output_details[0]['index'])
+    return keypoints[0]
 
+# Helper function for YOLO detection
+def detect_objects(frame):
+    blob = cv2.dnn.blobFromImage(frame, 1/255.0, (640, 640), swapRB=True, crop=False)
+    yolo_net.setInput(blob)
+    outputs = yolo_net.forward()
+    h, w = frame.shape[:2]
+    boxes, confidences, class_ids = [], [], []
 
-@sio.event
-async def connect(sid, environ):
-    print("Client connected:", sid)
+    for detection in outputs[0]:  # assuming output shape [N, 85]
+        scores = detection[5:]
+        class_id = np.argmax(scores)
+        confidence = scores[class_id]
+        if confidence > 0.4:
+            cx, cy, bw, bh = detection[0:4] * [w, h, w, h]
+            x = int(cx - bw/2)
+            y = int(cy - bh/2)
+            boxes.append([x, y, int(bw), int(bh)])
+            confidences.append(float(confidence))
+            class_ids.append(class_id)
+    indices = cv2.dnn.NMSBoxes(boxes, confidences, 0.4, 0.5)
+    result = []
+    for i in indices:
+        i = i[0]
+        result.append((boxes[i], class_ids[i], confidences[i]))
+    return result
 
-
-@sio.event
-async def disconnect(sid):
-    print("Client disconnected:", sid)
-
-
-@sio.event
-async def frame(sid, data):
-    """
-    Receives base64 image from client, runs hand tracking + YOLO, 
-    and sends back processed frame.
-    """
+# WebSocket streaming
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    await ws.accept()
+    cap = cv2.VideoCapture(0)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)  # lower resolution for faster streaming
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
     try:
-        # Decode base64 image
-        img_bytes = base64.b64decode(data.split(",")[1])
-        img = np.array(Image.open(BytesIO(img_bytes)))
-        frame = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                continue
 
-        h, w, _ = frame.shape
-
-        # --- YOLO Object Detection ---
-        yolo_results = yolo_model(frame)[0]  # first image
-        for det in yolo_results.boxes.data.tolist():  # xyxy, conf, cls
-            x1, y1, x2, y2, conf, cls_id = det
-            class_name = yolo_results.names[int(cls_id)]
-            if class_name in classes_of_interest:
-                cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-                cv2.putText(frame, f"{class_name} {conf:.2f}", (int(x1), int(y1)-10),
+            # Object detection
+            objects = detect_objects(frame)
+            for box, class_id, conf in objects:
+                x, y, w_box, h_box = box
+                cv2.rectangle(frame, (x, y), (x + w_box, y + h_box), (0, 255, 0), 2)
+                cv2.putText(frame, f"{yolo_classes[class_id]}:{conf:.2f}", (x, y-5),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
 
-        # --- Hand Landmarks (TFLite) ---
-        # Preprocess hand image (resize etc.)
-        img_input = cv2.resize(frame, (input_details[0]['shape'][2], input_details[0]['shape'][1]))
-        img_input = np.expand_dims(img_input.astype(np.float32), axis=0)
-        hand_model.set_tensor(input_details[0]['index'], img_input)
-        hand_model.invoke()
-        landmarks = hand_model.get_tensor(output_details[0]['index'])
+            # Hand landmarks
+            keypoints = detect_hand(frame)
+            for kp in keypoints:
+                x = int(kp[0] * frame.shape[1])
+                y = int(kp[1] * frame.shape[0])
+                cv2.circle(frame, (x, y), 3, (0, 0, 255), -1)  # smaller dots for smoother appearance
 
-        # Draw landmarks (dots on fingers)
-        for lm in landmarks[0]:
-            x, y, z = int(lm[0]*w), int(lm[1]*h), lm[2]
-            cv2.circle(frame, (x, y), 4, (0, 0, 255), -1)  # red small dots
-
-        # Encode back to base64
-        _, buffer = cv2.imencode('.jpg', frame)
-        frame_b64 = "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
-        await sio.emit("frame", frame_b64, to=sid)
-
+            # Encode frame as JPEG
+            _, buffer = cv2.imencode(".jpg", frame)
+            jpg_as_text = base64.b64encode(buffer).decode("utf-8")
+            await ws.send_text(jpg_as_text)
+            await asyncio.sleep(0.01)  # small sleep to reduce CPU load
     except Exception as e:
-        print("Error processing frame:", e)
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        print("WebSocket error:", e)
+    finally:
+        cap.release()
+        await ws.close()
